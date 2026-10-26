@@ -67,7 +67,29 @@ function schedule(){if(renderPending)return;renderPending=true;requestAnimationF
 async function modelRun(kind){const source=state.source;return new Promise(async(resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('识别超时')),35000);try{if(kind==='seg'){if(!seg){seg=new window.SelfieSegmentation({locateFile:f=>`vendor/segmentation/${f}`});seg.setOptions({modelSelection:0,selfieMode:false})}seg.onResults(r=>{const c=canvas(source.width,source.height),ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(r.segmentationMask,0,0,c.width,c.height);const pixels=ctx.getImageData(0,0,c.width,c.height);pixels.data.set(personMaskPixels(pixels.data,c.width,c.height));const input=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,c.width,c.height);const refined=refineFlatBackground(input.data,pixels.data,c.width,c.height);flatBackground=refined?.background||null;if(refined)pixels.data.set(refined.pixels);ctx.putImageData(pixels,0,0);clearTimeout(timer);resolve(c)});await seg.send({image:source})}else{if(!mesh){mesh=new window.FaceMesh({locateFile:f=>`vendor/face/${f}`});mesh.setOptions({maxNumFaces:1,refineLandmarks:false,minDetectionConfidence:.5,minTrackingConfidence:.5})}mesh.onResults(r=>{clearTimeout(timer);resolve(r.multiFaceLandmarks?.[0]||null)});await mesh.send({image:source})}}catch(e){clearTimeout(timer);reject(e)}})}
 async function analyze(){busy(true,'正在识别人像与肤质…');maskHistory.clear();drag=null;brushLast=null;activePointer=null;state.mask=null;state.face=null;flatBackground=null;cleanSource=null;state.brushMode='move';try{const result=[];for(const kind of ['seg','face']){try{result.push({status:'fulfilled',value:await modelRun(kind)})}catch(reason){result.push({status:'rejected',reason})}}for(const item of result)if(item.status==='rejected')console.warn('Portrait model:',item.reason?.message||String(item.reason));if(result[0].status==='fulfilled')state.mask=result[0].value;
  if(!state.mask){const src=state.source,w=src.width,h=src.height,input=src.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h);const refined=refineFlatBackground(input.data,new Uint8ClampedArray(input.data.length),w,h);if(refined){state.mask=canvas(w,h);state.mask.getContext('2d').putImageData(new ImageData(refined.pixels,w,h),0,0);flatBackground=refined.background}}
- if(result[1].status==='fulfilled'&&result[1].value)state.face=buildBeautyProfile(state.source,result[1].value,state.mask);state.keep=!state.mask&&!state.sample;$('#keepBackground').checked=state.keep;$('#segStatus').textContent=state.mask?flatBackground?'人像已识别；检测到纯色原背景，已细化人物边缘。可继续用画笔修补。':'人像已识别，可切换背景；复杂边缘可用画笔修补。':'背景识别暂不可用，已保留原背景。你仍可裁剪并生成相纸。';if(frameCropped)$('#segStatus').textContent+=' 已去除黑色外框。';$('#faceStatus').textContent=state.face?'已识别人脸，轻柔调整肤质与肤色，保护眼眉和嘴唇。':'未能可靠识别皮肤区域，美肌与肤色暂不可用。请尝试清晰正面照。';$('#beautyFields').disabled=!state.face;$('#retryAnalysis').hidden=!!(state.mask&&state.face);renderColors();skinProcess();render()}finally{busy(false)}}
+ if(result[1].status==='fulfilled'&&result[1].value)state.face=buildBeautyProfile(state.source,result[1].value,state.mask);state.keep=!state.mask&&!state.sample;$('#keepBackground').checked=state.keep;$('#segStatus').textContent=state.mask?flatBackground?'人像已识别；检测到纯色原背景，已细化人物边缘。可继续用画笔修补。':'人像已识别，可切换背景；复杂边缘可用画笔修补。':'背景识别暂不可用，已保留原背景。你仍可裁剪并生成相纸。';if(frameCropped)$('#segStatus').textContent+=' 已去除黑色外框。';updateBeautyStatus(result[1].status==='rejected'?'人脸识别加载失败，请重试。':result[1].value?'未识别到可用皮肤区域，请换一张清晰正面照。':'未识别到人脸，请重试或更换正面照。');$('#retryAnalysis').hidden=!!(state.mask&&state.face);renderColors();skinProcess();render()}finally{busy(false)}}
+function updateBeautyStatus(message){
+ const ready=!!state.face;
+ $('#beautyFields').disabled=!ready;
+ $('#faceStatus').hidden=ready;
+ $('#faceStatus').textContent=ready?'':message;
+ $('#retryBeauty').hidden=ready;
+ $('#compare').disabled=!ready;$('#resetBeauty').disabled=!ready;
+}
+async function retryBeauty(){
+ if(state.busy||!state.source)return;
+ busy(true,'正在重新识别人脸…');
+ try{
+  // Retry only face analysis. Keep the repaired foreground mask and stroke history.
+  mesh=null;
+  const landmarks=await modelRun('face');
+  state.face=landmarks?buildBeautyProfile(state.source,landmarks,state.mask):null;
+  updateBeautyStatus(landmarks?'未识别到可用皮肤区域，请更换清晰正面照。':'未识别到人脸，请更换清晰正面照。');
+  skinProcess();render();
+ }catch(error){state.face=null;updateBeautyStatus('人脸识别加载失败，请重试。');skinProcess();render();console.warn('Face retry:',error?.message||String(error));}
+ finally{$('#retryAnalysis').hidden=!!(state.mask&&state.face);busy(false)}
+}
+$('#retryBeauty').onclick=retryBeauty;
 function prepareSource(img){
  const previewScale=Math.min(1,600/Math.max(img.width,img.height)),preview=canvas(Math.max(1,Math.round(img.width*previewScale)),Math.max(1,Math.round(img.height*previewScale)));
  const pc=preview.getContext('2d',{willReadFrequently:true});pc.drawImage(img,0,0,preview.width,preview.height);
