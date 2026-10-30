@@ -1,0 +1,15 @@
+{
+  "release": "sync-b6fc493",
+  "source_commit": "b6fc49302eae13a1295055cc7d960b641ab78a3e",
+  "date": "2026-10-30",
+  "features": [
+    "transparent-input",
+    "subject-movement",
+    "brush-undo-redo",
+    "delete-restore-labels",
+    "010-0520-111",
+    "vector-pdf",
+    "600dpi-png",
+    "face-only-retry"
+  ]
+}

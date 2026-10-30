@@ -1,14 +1,17 @@
-import {buildBeautyProfile,applyNaturalBeauty} from './booth2-beauty.js';
-import {layouts,mmToPx} from './layouts.js';
-import {officialTemplates,loadOfficialTemplate,drawOfficialSheet} from './templates.js';
-import {personMaskPixels,refineFlatBackground,greenFrameBounds} from './mask.js';
-import {paintMaskStroke,createMaskHistory} from './retouch.js';
+import {printPortrait} from './print-photo.js?v=sync-b6fc493';
+import {alphaBounds,photoPlacement} from './crop.js?v=sync-b6fc493';
+import {buildBeautyProfile,applyNaturalBeauty} from './booth2-beauty.js?v=sync-b6fc493';
+import {layouts,mmToPx} from './layouts.js?v=sync-b6fc493';
+import {officialTemplates,loadOfficialTemplate,drawOfficialSheet} from './templates.js?v=sync-b6fc493';
+import {hasTransparentPixels,personMaskPixels,refineFlatBackground,greenFrameBounds} from './mask.js?v=sync-b6fc493';
+import {MaskHistory,paintMaskStroke} from './retouch.js?v=sync-b6fc493';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={step:0,furthest:0,layout:layouts[0],source:null,mask:null,face:null,sample:true,bg:0,keep:false,premiumUsed:false,brushMode:'move',brushSize:28,zoom:1,x:0,y:0,smooth:20,light:0,warm:0,compare:false,busy:false};
+const maskHistory=new MaskHistory();
+const state={step:0,furthest:0,layout:layouts[0],source:null,transparent:false,mask:null,face:null,sample:true,bg:0,keep:false,premiumUsed:false,brushMode:'move',brushSize:28,zoom:1,x:0,y:0,smooth:20,light:0,warm:0,compare:false,busy:false};
 const colors=[['写真蓝','#a7c9df'],['浅蓝','#d6e7ef'],['深蓝','#718fae'],['纯白','#ffffff'],['浅灰','#dedfe0'],['暖灰','#bcb6ac'],['樱花粉','#edcdd4'],['淡紫','#d5cfe3'],['米杏','#efe3cf']];
 const sheet=$('#sheet'), portrait=$('#portrait');
 const canvas=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c};
-let processed=null,cleanSource=null,flatBackground=null,frameCropped=false,seg=null,mesh=null,toastTimer,renderPending=false,brushRenderPending=false,generatedDate=null,generatedPrice=null;
+let originalImage=null,originalRect=null,processed=null,cleanSource=null,flatBackground=null,frameCropped=false,seg=null,mesh=null,toastTimer,renderPending=false,brushRenderPending=false,generatedDate=null,generatedPrice=null;
 function priceForState(){return state.premiumUsed&&!state.keep?1200:state.light!==0||state.warm!==0?1100:1000}
 function priceTier(){return priceForState()===1200?'九色背景 · Premium':priceForState()===1100?'肤色调整 · 肌美人スーパー':'基础美肤 · 标准'}
 const loadedTemplates={};
@@ -37,19 +40,24 @@ function skinProcess(){if(!state.source)return;const s=state.source,w=s.width,h=
   cleanSource=canvas(w,h);cleanSource.getContext('2d').putImageData(original,0,0)
  }
 }
-function composed(){if(!processed)return null;const c=canvas(processed.width,processed.height),ctx=c.getContext('2d');ctx.drawImage(cleanSource||processed,0,0);if(!state.keep&&(state.mask||state.sample)){if(state.mask){ctx.globalCompositeOperation='destination-in';ctx.drawImage(state.mask,0,0,c.width,c.height)}ctx.globalCompositeOperation='destination-over';ctx.fillStyle=colors[state.bg][1];ctx.fillRect(0,0,c.width,c.height);ctx.globalCompositeOperation='source-over'}return c;}
-function photo(ctx,img,x,y,w,h){ctx.save();ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();if(img){const scale=Math.max(w/img.width,h/img.height)*state.zoom;const iw=img.width*scale,ih=img.height*scale;let dx=x+(w-iw)/2+state.x*w,dy=y+(h-ih)/2+state.y*h;dx=Math.min(x,Math.max(x+w-iw,dx));dy=Math.min(y,Math.max(y+h-ih,dy));ctx.drawImage(img,dx,dy,iw,ih)}else{ctx.fillStyle=colors[state.bg][1];ctx.fillRect(x,y,w,h)}ctx.restore();}
+let contentBounds=null,boundsSource=null,boundsMask=null;
+const replacingBackground=()=>!state.keep&&!!(state.mask||state.sample);
+const freePlacement=()=>state.transparent||replacingBackground();
+const placement=(img,w,h)=>{const b=contentBounds,s=state.source;return photoPlacement(img,w,h,state,b&&{x:b.x*img.width/s.width,y:b.y*img.height/s.height,w:b.w*img.width/s.width,h:b.h*img.height/s.height},freePlacement())};
+function clampPosition(){const p=placement(state.source,portrait.width,portrait.height);state.x=(p.x-(portrait.width-p.width)/2)/portrait.width;state.y=(p.y-(portrait.height-p.height)/2)/portrait.height}
+function composed(){if(!processed)return null;const c=canvas(processed.width,processed.height),ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(cleanSource||processed,0,0);const mask=state.keep?null:state.mask;if(mask){ctx.globalCompositeOperation='destination-in';ctx.drawImage(mask,0,0,c.width,c.height);ctx.globalCompositeOperation='source-over'}
+ if(boundsSource!==state.source||boundsMask!==mask){contentBounds=alphaBounds(ctx.getImageData(0,0,c.width,c.height).data,c.width,c.height);boundsSource=state.source;boundsMask=mask}return c;}
+function photo(ctx,img,x,y,w,h){ctx.save();ctx.imageSmoothingQuality='high';ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();if(replacingBackground()||!img){ctx.fillStyle=colors[state.bg][1];ctx.fillRect(x,y,w,h)}if(img){const p=placement(img,w,h);ctx.drawImage(img,x+p.x,y+p.y,p.width,p.height)}ctx.restore();}
 function render(){const img=composed();let dimensions=null;if(currentTemplate()){dimensions=drawOfficialSheet(sheet,currentTemplate(),img,photo,generatedDate||new Date(),generatedPrice)}else{sheet.width=1;sheet.height=1}
  $('#ticketPrice').textContent='¥ '+priceForState().toLocaleString('ja-JP');$('#ticketTier').textContent=priceTier();$('#currentPrice').textContent=`${priceTier()} · 参考价 ¥ ${priceForState().toLocaleString('ja-JP')}（模拟付款）`;$('#receiptPrice').textContent='¥ '+(generatedPrice??priceForState()).toLocaleString('ja-JP');$('#layoutInfo').textContent=`使用官网原始相纸底版。${state.layout.detail}（宽 × 高）。`;
  const first=state.layout.groups[0];portrait.width=420;portrait.height=Math.round(420*first.h/first.w);photo(portrait.getContext('2d'),img,0,0,portrait.width,portrait.height);$('#previewCaption').textContent=state.layout.tag+' · 官网原版';$('#previewSize').textContent=`${first.w} × ${first.h} mm`;$('#sampleNote').hidden=!state.sample;
- if(dimensions){const date=generatedDate||new Date();$('#exportInfo').textContent=`${sheet.width} × ${sheet.height} px · 300 DPI · 官网底版`;$('#receiptDate').textContent=`${date.getFullYear()} 年 ${date.getMonth()+1} 月 ${date.getDate()} 日`;}
+ if(dimensions){const date=generatedDate||new Date();$('#exportInfo').textContent=`${dimensions.widthMm.toFixed(1)} × ${dimensions.heightMm.toFixed(1)} mm · 高清 PNG / 打印 PDF`;$('#receiptDate').textContent=`${date.getFullYear()} 年 ${date.getMonth()+1} 月 ${date.getDate()} 日`;}
  renderBrushControls();
 }
 function renderBrushControls(){
  const usable=!!state.mask&&!state.keep;
+ $('#brushUndo').disabled=state.busy||!usable||!maskHistory.canUndo||!!brushLast;$('#brushRedo').disabled=state.busy||!usable||!maskHistory.canRedo||!!brushLast;
  $('#brushTools').hidden=!usable;
- $('#brushUndo').disabled=state.busy||!usable||!maskHistory.canUndo;
- $('#brushRedo').disabled=state.busy||!usable||!maskHistory.canRedo;
  for(const mode of ['Erase','Restore','Move'])$('#brush'+mode).setAttribute('aria-pressed',String(state.brushMode===mode.toLowerCase()));
  portrait.classList.toggle('brushing',usable&&state.brushMode!=='move');
  $('.drag-hint').textContent=state.brushMode==='erase'?'在照片上涂抹，擦掉残留背景':state.brushMode==='restore'?'在照片上涂抹，恢复人物':'拖动照片调整位置';
@@ -57,22 +65,22 @@ function renderBrushControls(){
 function setBrushMode(mode){if(mode!=='move'&&!state.mask)return toast('请先完成人像识别');state.brushMode=mode;if(mode!=='move'){state.keep=false;state.premiumUsed=true;$('#keepBackground').checked=false}render()}
 function brushPoint(e){
  const r=portrait.getBoundingClientRect(),w=portrait.width,h=portrait.height,img=state.source;
- const scale=Math.max(w/img.width,h/img.height)*state.zoom,iw=img.width*scale,ih=img.height*scale;
- let dx=(w-iw)/2+state.x*w,dy=(h-ih)/2+state.y*h;
- dx=Math.min(0,Math.max(w-iw,dx));dy=Math.min(0,Math.max(h-ih,dy));
- return {x:((e.clientX-r.left)*w/r.width-dx)/scale,y:((e.clientY-r.top)*h/r.height-dy)/scale,radius:state.brushSize*w/r.width/scale};
+ const p=placement(img,w,h);
+ return {x:((e.clientX-r.left)*w/r.width-p.x)/p.scale,y:((e.clientY-r.top)*h/r.height-p.y)/p.scale,radius:state.brushSize*w/r.width/p.scale};
 }
-function scheduleBrushRender(){if(brushRenderPending)return;brushRenderPending=true;requestAnimationFrame(()=>{brushRenderPending=false;render()})}
+function scheduleBrushRender(){boundsSource=null;if(brushRenderPending)return;brushRenderPending=true;requestAnimationFrame(()=>{brushRenderPending=false;render()})}
 function schedule(){if(renderPending)return;renderPending=true;requestAnimationFrame(()=>{renderPending=false;skinProcess();render()})}
 async function modelRun(kind){const source=state.source;return new Promise(async(resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('识别超时')),35000);try{if(kind==='seg'){if(!seg){seg=new window.SelfieSegmentation({locateFile:f=>`vendor/segmentation/${f}`});seg.setOptions({modelSelection:0,selfieMode:false})}seg.onResults(r=>{const c=canvas(source.width,source.height),ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(r.segmentationMask,0,0,c.width,c.height);const pixels=ctx.getImageData(0,0,c.width,c.height);pixels.data.set(personMaskPixels(pixels.data,c.width,c.height));const input=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,c.width,c.height);const refined=refineFlatBackground(input.data,pixels.data,c.width,c.height);flatBackground=refined?.background||null;if(refined)pixels.data.set(refined.pixels);ctx.putImageData(pixels,0,0);clearTimeout(timer);resolve(c)});await seg.send({image:source})}else{if(!mesh){mesh=new window.FaceMesh({locateFile:f=>`vendor/face/${f}`});mesh.setOptions({maxNumFaces:1,refineLandmarks:false,minDetectionConfidence:.5,minTrackingConfidence:.5})}mesh.onResults(r=>{clearTimeout(timer);resolve(r.multiFaceLandmarks?.[0]||null)});await mesh.send({image:source})}}catch(e){clearTimeout(timer);reject(e)}})}
-async function analyze(){busy(true,'正在识别人像与肤质…');maskHistory.clear();drag=null;brushLast=null;activePointer=null;state.mask=null;state.face=null;flatBackground=null;cleanSource=null;state.brushMode='move';try{const result=[];for(const kind of ['seg','face']){try{result.push({status:'fulfilled',value:await modelRun(kind)})}catch(reason){result.push({status:'rejected',reason})}}for(const item of result)if(item.status==='rejected')console.warn('Portrait model:',item.reason?.message||String(item.reason));if(result[0].status==='fulfilled')state.mask=result[0].value;
+// Source Alpha already supplies the cutout; this opaque mask only enables existing editing tools.
+function transparentInputMask(){const c=canvas(state.source.width,state.source.height),ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);return c}
+async function analyze(){maskHistory.clear();brushLast=null;drag=null;activePointer=null;busy(true,'正在识别人像与肤质…');state.mask=null;state.face=null;flatBackground=null;cleanSource=null;state.brushMode='move';try{const result=[];for(const kind of ['seg','face']){try{result.push({status:'fulfilled',value:kind==='seg'&&state.transparent?transparentInputMask():await modelRun(kind)})}catch(reason){result.push({status:'rejected',reason})}}for(const item of result)if(item.status==='rejected')console.warn('Portrait model:',item.reason?.message||String(item.reason));if(result[0].status==='fulfilled')state.mask=result[0].value;
  if(!state.mask){const src=state.source,w=src.width,h=src.height,input=src.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h);const refined=refineFlatBackground(input.data,new Uint8ClampedArray(input.data.length),w,h);if(refined){state.mask=canvas(w,h);state.mask.getContext('2d').putImageData(new ImageData(refined.pixels,w,h),0,0);flatBackground=refined.background}}
- if(result[1].status==='fulfilled'&&result[1].value)state.face=buildBeautyProfile(state.source,result[1].value,state.mask);state.keep=!state.mask&&!state.sample;$('#keepBackground').checked=state.keep;$('#segStatus').textContent=state.mask?flatBackground?'人像已识别；检测到纯色原背景，已细化人物边缘。可继续用画笔修补。':'人像已识别，可切换背景；复杂边缘可用画笔修补。':'背景识别暂不可用，已保留原背景。你仍可裁剪并生成相纸。';if(frameCropped)$('#segStatus').textContent+=' 已去除黑色外框。';updateBeautyStatus(result[1].status==='rejected'?'人脸识别加载失败，请重试。':result[1].value?'未识别到可用皮肤区域，请换一张清晰正面照。':'未识别到人脸，请重试或更换正面照。');$('#retryAnalysis').hidden=!!(state.mask&&state.face);renderColors();skinProcess();render()}finally{busy(false)}}
+ if(result[1].status==='fulfilled'&&result[1].value)state.face=buildBeautyProfile(state.source,result[1].value,state.mask);state.keep=!state.mask&&!state.sample;$('#keepBackground').checked=state.keep;$('#segStatus').textContent=state.transparent?'已保留图片透明背景，跳过自动抠图；可切换背景或用画笔修补。':state.mask?flatBackground?'人像已识别；检测到纯色原背景，已细化人物边缘。可继续用画笔修补。':'人像已识别，可切换背景；复杂边缘可用画笔修补。':'背景识别暂不可用，已保留原背景。你仍可裁剪并生成相纸。';if(frameCropped)$('#segStatus').textContent+=' 已去除黑色外框。';updateBeautyStatus(result[1].status==='rejected'?'人脸识别加载失败，请重试。':result[1].value?'未识别到可用皮肤区域，请换一张清晰正面照。':'未识别到人脸，请重试或更换正面照。');$('#retryAnalysis').hidden=!!(state.mask&&state.face);renderColors();skinProcess();render()}finally{busy(false)}}
 function updateBeautyStatus(message){
  const ready=!!state.face;
  $('#beautyFields').disabled=!ready;
  $('#faceStatus').hidden=ready;
- $('#faceStatus').textContent=ready?'':message;
+ $('#faceStatus').textContent=ready?'已识别人脸，轻柔调整肤质与肤色，保护眼眉和嘴唇。':message;
  $('#retryBeauty').hidden=ready;
  $('#compare').disabled=!ready;$('#resetBeauty').disabled=!ready;
 }
@@ -91,36 +99,57 @@ async function retryBeauty(){
 }
 $('#retryBeauty').onclick=retryBeauty;
 function prepareSource(img){
+ const inputScale=Math.min(1,1200/Math.max(img.width,img.height)),input=canvas(Math.max(1,Math.round(img.width*inputScale)),Math.max(1,Math.round(img.height*inputScale)));
+ const inputContext=input.getContext('2d',{willReadFrequently:true});inputContext.drawImage(img,0,0,input.width,input.height);
+ if(hasTransparentPixels(inputContext.getImageData(0,0,input.width,input.height).data))return {src:input,cropped:false,transparent:true,rect:{x:0,y:0,w:img.width,h:img.height}};
  const previewScale=Math.min(1,600/Math.max(img.width,img.height)),preview=canvas(Math.max(1,Math.round(img.width*previewScale)),Math.max(1,Math.round(img.height*previewScale)));
  const pc=preview.getContext('2d',{willReadFrequently:true});pc.drawImage(img,0,0,preview.width,preview.height);
  const bounds=greenFrameBounds(pc.getImageData(0,0,preview.width,preview.height).data,preview.width,preview.height);
+ if(!bounds)return {src:input,cropped:false,transparent:false,rect:{x:0,y:0,w:img.width,h:img.height}};
  const sx=bounds?bounds.x/previewScale:0,sy=bounds?bounds.y/previewScale:0,sw=bounds?bounds.w/previewScale:img.width,sh=bounds?bounds.h/previewScale:img.height;
  const scale=Math.min(1,1200/Math.max(sw,sh)),src=canvas(Math.max(1,Math.round(sw*scale)),Math.max(1,Math.round(sh*scale)));
  src.getContext('2d').drawImage(img,sx,sy,sw,sh,0,0,src.width,src.height);
- return {src,cropped:!!bounds};
+ return {src,cropped:!!bounds,transparent:false,rect:{x:sx,y:sy,w:sw,h:sh}};
 }
-async function loadImage(url,sample=false){busy(true);try{const img=new Image();img.src=url;await img.decode();const prepared=prepareSource(img);maskHistory.clear();drag=null;brushLast=null;activePointer=null;state.source=prepared.src;state.face=null;state.mask=null;frameCropped=prepared.cropped;state.sample=sample;flatBackground=null;cleanSource=null;state.brushMode='move';state.x=state.y=0;state.zoom=1;state.compare=false;$('#zoom').value=100;$('#zoomValue').textContent='100%';$('#compare').textContent='查看美颜前';$('#compare').setAttribute('aria-pressed','false');skinProcess();busy(false);go(3);await analyze()}catch(e){busy(false);toast('这张图片暂时无法读取，请选择 JPG、PNG 或 WebP 图片')}}
+async function loadImage(url,sample=false){busy(true);try{const img=new Image();img.src=url;await img.decode();const prepared=prepareSource(img);originalImage=img;originalRect=prepared.rect;maskHistory.clear();brushLast=null;drag=null;activePointer=null;state.source=prepared.src;state.transparent=prepared.transparent;state.face=null;state.mask=null;frameCropped=prepared.cropped;state.sample=sample;flatBackground=null;cleanSource=null;state.brushMode='move';state.x=state.y=0;state.zoom=1;state.compare=false;$('#zoom').value=100;$('#zoomValue').textContent='100%';$('#compare').textContent='查看美颜前';$('#compare').setAttribute('aria-pressed','false');skinProcess();busy(false);go(3);await analyze()}catch(e){busy(false);toast('这张图片暂时无法读取，请选择 JPG、PNG 或 WebP 图片')}}
 async function handleFile(file){if(!file)return;if(file.size>30*1024*1024)return toast('请选择小于 30 MB 的图片');const url=URL.createObjectURL(file);try{await loadImage(url,false)}finally{URL.revokeObjectURL(url);$('#upload').value=''}}
 let stream=null,cameraRequest=0;
 async function openCamera(){if(!navigator.mediaDevices?.getUserMedia)return toast('此浏览器无法打开摄像头，请选择上传照片');const ticket=++cameraRequest;try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:1600}},audio:false});if(ticket!==cameraRequest){s.getTracks().forEach(t=>t.stop());return}stream=s;$('#video').srcObject=s;$('#cameraPanel').hidden=false;await $('#video').play()}catch(e){closeCamera();toast(e.name==='NotAllowedError'?'摄像头权限未开启，可在浏览器设置允许，或直接上传照片':'摄像头暂不可用，请尝试上传照片')}}
 function closeCamera(){cameraRequest++;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('#video').srcObject=null;$('#cameraPanel').hidden=true}
 function capture(){const v=$('#video');if(!v.videoWidth)return toast('摄像头尚未就绪');const c=canvas(v.videoWidth,v.videoHeight),ctx=c.getContext('2d');ctx.translate(c.width,0);ctx.scale(-1,1);ctx.drawImage(v,0,0);closeCamera();loadImage(c.toDataURL('image/jpeg',.95),false)}
 function crc32(bytes){let crc=-1;for(const n of bytes){crc^=n;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^-1)>>>0}
-async function dpiBlob(c){const raw=await new Promise(resolve=>c.toBlob(resolve,'image/png'));if(!raw)throw Error('图片导出失败');const bytes=new Uint8Array(await raw.arrayBuffer()),chunk=new Uint8Array(21),view=new DataView(chunk.buffer);view.setUint32(0,9);chunk.set([112,72,89,115],4);view.setUint32(8,11811);view.setUint32(12,11811);chunk[16]=1;view.setUint32(17,crc32(chunk.slice(4,17)));return new Blob([bytes.slice(0,33),chunk,bytes.slice(33)],{type:'image/png'})}
-async function download(single){if(state.busy)return;if(!currentTemplate())return toast('官方相纸底版尚未加载，暂时无法下载');try{let c=sheet;if(single){const f=state.layout.groups[0];c=canvas(mmToPx(f.w),mmToPx(f.h));photo(c.getContext('2d'),composed(),0,0,c.width,c.height)}const blob=await dpiBlob(c),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`駅前写真室-${single?'单张':'相纸'}-${state.layout.id}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);toast('图片已准备下载，可在浏览器下载记录中查看')}catch(e){toast('图片保存失败，请重试')}}
+async function dpiBlob(c,dpi=600){const raw=await new Promise(resolve=>c.toBlob(resolve,'image/png'));if(!raw)throw Error('图片导出失败');const bytes=new Uint8Array(await raw.arrayBuffer()),chunk=new Uint8Array(21),view=new DataView(chunk.buffer);view.setUint32(0,9);chunk.set([112,72,89,115],4);view.setUint32(8,Math.round(dpi/0.0254));view.setUint32(12,Math.round(dpi/0.0254));chunk[16]=1;view.setUint32(17,crc32(chunk.slice(4,17)));return new Blob([bytes.slice(0,33),chunk,bytes.slice(33)],{type:'image/png'})}
+async function download(single,pdf=false){
+ if(state.busy)return;if(!currentTemplate())return toast('相纸尚未加载，请稍候');
+ busy(true,'正在生成高清打印文件…');
+ try{
+  await new Promise(r=>setTimeout(r,30));composed();
+  const img=printPortrait(originalImage||state.source,originalRect,state.source,cleanSource||processed,state.mask,state.keep),date=generatedDate||new Date(),price=generatedPrice??priceForState();
+  let blob;
+  if(pdf){
+   const {printPDF}=await import('./vendor/print-pdf.js?v=sync-b6fc493');
+   blob=await printPDF(currentTemplate(),(w,h)=>{const c=canvas(Math.round(w/25.4*600),Math.round(h/25.4*600));photo(c.getContext('2d'),img,0,0,c.width,c.height);return c},date,price,false);
+  }else{
+   let c;
+   if(single){const f=state.layout.groups[0];c=canvas(Math.round(f.w/25.4*600),Math.round(f.h/25.4*600));photo(c.getContext('2d'),img,0,0,c.width,c.height)}
+   else{c=canvas(1,1);drawOfficialSheet(c,currentTemplate(),img,photo,date,price,600);}
+   blob=await dpiBlob(c);
+  }
+  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`駅前写真室-${single?'单张':'相纸'}-${state.layout.id}.${pdf?'pdf':'png'}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);toast('高清文件已准备下载，打印请选择实际大小')
+ }catch(e){console.error('Print export:',e);toast('文件生成失败，请重试')}finally{busy(false)}
+}
+
 $$('[data-next]').forEach(b=>b.onclick=()=>go(+b.dataset.next));$('#pay').onclick=()=>{toast('演示写真券已领取，无实际扣款');go(2)};$('#upload').onchange=e=>handleFile(e.target.files[0]);$('#openCamera').onclick=openCamera;$('#closeCamera').onclick=closeCamera;$('#capture').onclick=capture;$('#useSample').onclick=()=>loadImage('assets/sample.png',true);$('#retryAnalysis').onclick=analyze;window.addEventListener('pagehide',closeCamera);
 const drop=$('#drop');for(const name of ['dragenter','dragover'])drop.addEventListener(name,e=>{e.preventDefault();drop.classList.add('over')});for(const name of ['dragleave','drop'])drop.addEventListener(name,e=>{e.preventDefault();drop.classList.remove('over');if(name==='drop')handleFile(e.dataTransfer.files[0])});
 $$('[data-tab]').forEach(b=>b.onclick=()=>{$$('[data-tab]').forEach(x=>x.setAttribute('aria-selected',String(x===b)));$$('[data-tab-panel]').forEach(x=>x.hidden=x.dataset.tabPanel!==b.dataset.tab);if(b.dataset.tab!=='background')setBrushMode('move')});
 for(const id of ['zoom','smooth','light','warm'])$('#'+id).oninput=e=>{state[id]=id==='zoom'?+e.target.value/100:+e.target.value;$('#'+id+'Value').textContent=e.target.value+(id==='zoom'?'%':'');schedule()};
 $('#resetCrop').onclick=()=>{state.zoom=1;state.x=state.y=0;$('#zoom').value=100;$('#zoomValue').textContent='100%';render()};$('#keepBackground').onchange=e=>{state.keep=e.target.checked;if(state.keep)state.brushMode='move';if(!state.keep&&!state.mask&&!state.sample){state.keep=true;e.target.checked=true;toast('请先完成背景识别')}renderColors();render()};$('#resetBeauty').onclick=()=>{for(const id of ['smooth','light','warm']){state[id]=0;$('#'+id).value=0;$('#'+id+'Value').textContent='0'}schedule()};$('#compare').onclick=()=>{state.compare=!state.compare;$('#compare').setAttribute('aria-pressed',String(state.compare));$('#compare').textContent=state.compare?'恢复美颜效果':'查看美颜前';schedule()};
-const maskHistory=createMaskHistory();
 let drag=null,brushLast=null,activePointer=null;
-portrait.addEventListener('pointerdown',e=>{if(state.busy||activePointer!==null||e.button!==0)return;activePointer=e.pointerId;if(state.brushMode!=='move'&&state.mask&&!state.keep){maskHistory.begin(state.mask);renderBrushControls();brushLast=brushPoint(e);portrait.setPointerCapture(e.pointerId);paintMaskStroke(state.mask,brushLast,brushLast,brushLast.radius,state.brushMode==='restore');scheduleBrushRender();return}drag={px:e.clientX,py:e.clientY,x:state.x,y:state.y};portrait.setPointerCapture(e.pointerId)});
-portrait.addEventListener('pointermove',e=>{if(e.pointerId!==activePointer)return;if(brushLast){const next=brushPoint(e);paintMaskStroke(state.mask,brushLast,next,next.radius,state.brushMode==='restore');brushLast=next;scheduleBrushRender();return}if(!drag)return;const r=portrait.getBoundingClientRect();state.x=Math.max(-2,Math.min(2,drag.x+(e.clientX-drag.px)/r.width));state.y=Math.max(-2,Math.min(2,drag.y+(e.clientY-drag.py)/r.height));render()});
+portrait.addEventListener('pointerdown',e=>{if(state.busy||activePointer!==null||e.button!==0)return;activePointer=e.pointerId;if(state.brushMode!=='move'&&state.mask&&!state.keep){maskHistory.begin(state.mask);brushLast=brushPoint(e);renderBrushControls();portrait.setPointerCapture(e.pointerId);paintMaskStroke(state.mask,brushLast,brushLast,brushLast.radius,state.brushMode==='restore');scheduleBrushRender();return}clampPosition();drag={px:e.clientX,py:e.clientY,x:state.x,y:state.y};portrait.setPointerCapture(e.pointerId)});
+portrait.addEventListener('pointermove',e=>{if(e.pointerId!==activePointer)return;if(brushLast){const next=brushPoint(e);paintMaskStroke(state.mask,brushLast,next,next.radius,state.brushMode==='restore');brushLast=next;scheduleBrushRender();return}if(!drag)return;const r=portrait.getBoundingClientRect();state.x=drag.x+(e.clientX-drag.px)/r.width;state.y=drag.y+(e.clientY-drag.py)/r.height;clampPosition();drag={px:e.clientX,py:e.clientY,x:state.x,y:state.y};render()});
 for(const event of ['pointerup','pointercancel','lostpointercapture'])portrait.addEventListener(event,e=>{if(e.pointerId!==activePointer)return;if(brushLast)maskHistory.commit(state.mask);activePointer=null;drag=null;brushLast=null;render()});
-$('#brushUndo').onclick=()=>{if(state.busy||activePointer!==null||!state.mask)return;if(maskHistory.undo(state.mask)){render();toast('已撤销上一笔')}};
-$('#brushRedo').onclick=()=>{if(state.busy||activePointer!==null||!state.mask)return;if(maskHistory.redo(state.mask)){render();toast('已重做上一笔')}};
+for(const [id,action] of [['brushUndo','undo'],['brushRedo','redo']])$('#'+id).onclick=()=>{if(!state.busy&&activePointer===null&&state.mask&&!brushLast&&maskHistory[action](state.mask)){boundsSource=null;render()}};
 $('#brushErase').onclick=()=>setBrushMode('erase');$('#brushRestore').onclick=()=>setBrushMode('restore');$('#brushMove').onclick=()=>setBrushMode('move');
 $('#brushSize').oninput=e=>{state.brushSize=+e.target.value;$('#brushSizeValue').textContent=e.target.value};
-$('#print').onclick=()=>{generatedDate=new Date();generatedPrice=priceForState();go(4);sheet.classList.remove('printing');void sheet.offsetWidth;sheet.classList.add('printing')};$('#downloadSheet').onclick=()=>download(false);$('#downloadPortrait').onclick=()=>download(true);
-showLayouts();renderColors();renderSteps();$('#print').disabled=true;const initial=new Image();initial.src='assets/sample.png';Promise.all([Promise.all(Object.entries(officialTemplates).map(async([id,definition])=>[id,await loadOfficialTemplate(definition)])),initial.decode()]).then(([templates])=>{Object.assign(loadedTemplates,Object.fromEntries(templates));const c=canvas(initial.width,initial.height);c.getContext('2d').drawImage(initial,0,0);state.source=c;skinProcess();$('#print').disabled=false;render()}).catch(()=>toast('官网底版加载失败，请刷新后重试'));render();
+$('#print').onclick=()=>{generatedDate=new Date();generatedPrice=priceForState();go(4);sheet.classList.remove('printing');void sheet.offsetWidth;sheet.classList.add('printing')};$('#downloadSheet').onclick=()=>download(false);$('#downloadPortrait').onclick=()=>download(true);$('#downloadPDF').onclick=()=>download(false,true);
+showLayouts();renderColors();renderSteps();$('#print').disabled=true;const initial=new Image();initial.src='assets/sample.png';Promise.all([Promise.all(Object.entries(officialTemplates).map(async([id,definition])=>[id,await loadOfficialTemplate(definition)])),initial.decode()]).then(([templates])=>{Object.assign(loadedTemplates,Object.fromEntries(templates));const c=canvas(initial.width,initial.height);c.getContext('2d').drawImage(initial,0,0);originalImage=initial;originalRect=null;state.source=c;skinProcess();$('#print').disabled=false;render()}).catch(()=>toast('官网底版加载失败，请刷新后重试'));render();

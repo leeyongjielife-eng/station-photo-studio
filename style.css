@@ -8,3 +8,5 @@
 .brush-actions{flex-wrap:wrap}.brush-actions .subtle{flex:1;min-width:96px}.brush-actions [aria-pressed=true]{background:#203f63;color:white;border-color:#203f63}#portrait.brushing{cursor:crosshair}.drag-hint{pointer-events:none}
 
 .layout-translation{display:block;font-size:12px;line-height:1.5;font-weight:400;color:var(--ink);margin-top:5px;overflow-wrap:anywhere}
+
+.brush-size-heading{display:flex;align-items:center;gap:8px;min-height:28px}.brush-size-heading output{float:none;margin-left:auto}.brush-history{display:inline-flex;align-items:center;gap:2px}.history-button{display:inline-grid;place-items:center;width:28px;height:28px;padding:4px;border:0;border-radius:4px;background:transparent;color:var(--ink)}.history-button:hover:enabled{background:#e8eff3}.history-button:disabled{color:#acb5bc;cursor:default}.history-button svg{pointer-events:none}

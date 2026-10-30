@@ -1,3 +1,9 @@
+// Inspect actual pixels, including partial Alpha; an opaque PNG still needs segmentation.
+export function hasTransparentPixels(pixels){
+ for(let i=3;i<pixels.length;i+=4)if(pixels[i]<255)return true;
+ return false;
+}
+
 // MediaPipe's segmentation mask can encode confidence as grayscale RGB or alpha.
 export function personMaskPixels(input,width,height){
  let minAlpha=255;

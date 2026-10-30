@@ -1,10 +1,6 @@
+import {loadPrintFonts} from './sheet-artwork.js?v=sync-b6fc493';
 // Second-booth-only receipt artwork. Original Photo ME templates remain unchanged.
-export async function loadBooth2ReceiptFonts(){
- for(const weight of ['regular','bold']){
-  const font=new FontFace('BoothReceipt',`url(assets/fonts/booth2-receipt-${weight}.otf)`,{weight:weight==='bold'?'700':'400'});
-  await font.load();document.fonts.add(font);
- }
-}
+export async function loadBooth2ReceiptFonts(){return loadPrintFonts()}
 
 function receipt(ctx,x,y,w,h,date,price){
  ctx.save();ctx.translate(x,y);ctx.scale(w/1000,h/300);
@@ -12,7 +8,7 @@ function receipt(ctx,x,y,w,h,date,price){
  ctx.font='700 23px BoothReceipt';ctx.fillText('PREMIUM',0,43);
  ctx.lineWidth=1;ctx.strokeStyle='#242424';ctx.beginPath();ctx.moveTo(0,52);ctx.lineTo(116,52);ctx.stroke();
  ctx.textAlign='right';ctx.font='700 30px BoothReceipt';ctx.fillText('スタジオセンター',1000,35);
- ctx.font='700 33px BoothReceipt';ctx.fillText('0100520111',1000,83);
+ ctx.font='700 33px BoothReceipt';ctx.fillText('010-0520-111',1000,83);
  ctx.strokeStyle='#777';ctx.setLineDash([5,5]);ctx.beginPath();ctx.moveTo(0,116);ctx.lineTo(1000,116);ctx.stroke();ctx.setLineDash([]);
  ctx.textAlign='left';ctx.font='700 25px BoothReceipt';ctx.fillText('領 収 証',0,160);
  ctx.font='700 29px BoothReceipt';ctx.fillText('¥ '+Number(price??1000).toLocaleString('ja-JP'),175,160);
@@ -25,10 +21,10 @@ function receipt(ctx,x,y,w,h,date,price){
 }
 
 export function drawBooth2Receipt(canvas,template,date,price){
- const d=template.definition,p=d.paper,scale=canvas.width/p.w,ctx=canvas.getContext('2d');
- // Sample unprinted paper in the top-right margin to cover the old receipt.
- const pixel=ctx.getImageData(Math.round((p.w-8)*scale),Math.round(12*scale),1,1).data;
- ctx.save();ctx.scale(scale,scale);ctx.fillStyle=`rgb(${pixel[0]},${pixel[1]},${pixel[2]})`;
+ const p=template.definition.paper,ctx=canvas.getContext('2d');ctx.save();ctx.scale(canvas.width/p.w,canvas.height/p.h);drawBooth2ReceiptArtwork(ctx,template.definition,date,price);ctx.restore();
+}
+export function drawBooth2ReceiptArtwork(ctx,d,date,price){
+ const p=d.paper;ctx.save();ctx.fillStyle='#fff';
  if(d.date.rotation){
   ctx.fillRect(511,0,p.w-511,p.h);
   ctx.translate(525,430);ctx.rotate(-Math.PI/2);
